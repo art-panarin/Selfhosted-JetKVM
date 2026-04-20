@@ -1,0 +1,73 @@
+name: jetkvm-cloud-api
+
+networks:
+  jetkvm:
+    driver: bridge
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-jetkvm}
+      POSTGRES_USER: jetkvm
+      POSTGRES_DB: jetkvm
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U jetkvm -d jetkvm"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+    networks:
+      - jetkvm
+    volumes:
+      - postgresql:/var/lib/postgresql
+
+  # Run database migrations before starting the app
+  app-migrate:
+    build: .
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgres://jetkvm:${DB_PASSWORD:-jetkvm}@db:5432/jetkvm
+    depends_on:
+      db:
+        condition: service_healthy
+    command: ["sh", "-c", "npx prisma migrate deploy"]
+    networks:
+      - jetkvm
+    restart: no
+
+  app:
+    build: .
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      PORT: 3000
+      DATABASE_URL: postgres://jetkvm:${DB_PASSWORD:-jetkvm}@db:5432/jetkvm
+      UI_DIST_PATH: /ui-dist
+    depends_on:
+      db:
+        condition: service_healthy
+      app-migrate:
+        condition: service_completed_successfully
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./ui-dist:/ui-dist:ro
+      - ./dist:/usr/src/app/dist:ro
+    networks:
+      - jetkvm
+
+  turn:
+    image: coturn/coturn:latest
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./coturn/turnserver.conf:/etc/coturn/turnserver.conf:ro
+    command: ["-c", "/etc/coturn/turnserver.conf"]
+
+volumes:
+  postgresql:
+    driver: local

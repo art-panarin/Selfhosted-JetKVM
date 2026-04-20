@@ -1,0 +1,52 @@
+# === Stage 1: Build Cloud UI ===
+FROM node:22-alpine AS ui-builder
+WORKDIR /ui
+
+# Copy UI source from KVM_Dev/ui (build context is JetKVM-All root)
+COPY KVM_Dev/ui/ ./
+
+RUN npm ci
+
+# sse.html is a symlink to Go code (device-only), create a placeholder
+RUN mkdir -p public && \
+    rm -f public/sse.html && \
+    echo '<!DOCTYPE html><html><body>SSE debug</body></html>' > public/sse.html
+
+RUN npm run i18n:compile
+RUN npx vite build --mode=cloud-selfhosted --outDir=dist --emptyOutDir
+
+# === Stage 2: Build Cloud API ===
+FROM node:22-alpine AS api-builder
+WORKDIR /usr/src/app
+
+COPY Cloud-API_Dev/package.json Cloud-API_Dev/package-lock.json ./
+RUN npm ci
+
+COPY Cloud-API_Dev/ ./
+RUN npm run build
+
+# === Stage 3: Production image ===
+FROM node:22-alpine
+RUN apk add --no-cache openssl
+WORKDIR /usr/src/app
+
+# Copy API dependencies (production only)
+COPY Cloud-API_Dev/package.json Cloud-API_Dev/package-lock.json ./
+RUN npm ci --omit=dev
+
+# Copy Prisma schema and generate client for THIS runtime
+COPY --from=api-builder /usr/src/app/prisma ./prisma
+RUN npx prisma generate
+
+# Copy compiled API
+COPY --from=api-builder /usr/src/app/dist ./dist
+
+# Copy built UI
+COPY --from=ui-builder /ui/dist ./ui-dist
+
+ENV NODE_ENV=production
+ENV PORT=3000
+ENV UI_DIST_PATH=/usr/src/app/ui-dist
+EXPOSE 3000
+
+CMD ["node", "./dist/index.js"]

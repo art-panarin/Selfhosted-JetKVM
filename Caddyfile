@@ -1,0 +1,6 @@
+{$DOMAIN} {
+	# API and UI
+	reverse_proxy app:3000
+
+	# WebSocket signaling (upgrade headers handled automatically by Caddy)
+}
