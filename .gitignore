@@ -1,0 +1,63 @@
+# ── macOS ──────────────────────────────────────────
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# ── IDE / Editor ───────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# ── Node.js ────────────────────────────────────────
+node_modules/
+node_modules*/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.npm/
+.pnp.*
+
+# ── Build artefacts (хранятся в репо для prod, но не для dev) ──
+# Папки dist/ и ui-dist/ оставляем — это собранные артефакты, нужны для контейнера.
+# Если будете пересобирать локально — удалите комментарии ниже:
+# dist/
+# ui-dist/
+
+# ── Secrets / Env ──────────────────────────────────
+.env
+.env.local
+.env.*.local
+.env.prod
+.env.development
+!.env.example
+!.env.prod.example
+!.env.portainer.example
+
+# ── Docker / Images ────────────────────────────────
+# tar.gz с образом хранится в GitHub Releases, см. ReadGH.me
+*.tar.gz
+*.tar
+!.gitkeep
+
+# ── Caddy data ─────────────────────────────────────
+caddy_data/
+caddy_config/
+
+# ── Logs ───────────────────────────────────────────
+*.log
+logs/
+
+# ── Coverage / Tests ───────────────────────────────
+coverage/
+.nyc_output/
+
+# ── Generated Prisma client ────────────────────────
+node_modules/.prisma/
+
+# ── Temp ───────────────────────────────────────────
+*.tmp
+*.bak
+*.backup

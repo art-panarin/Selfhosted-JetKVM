@@ -1,0 +1,130 @@
+name: jetkvm-cloud
+
+# =====================================================================
+# JetKVM Cloud — Portainer deployment stack
+#
+# Use this compose file when deploying via Portainer (Stacks → Repository).
+# It uses the pre-built image jetkvm-cloud:latest delivered via tar.gz
+# (loaded automatically by the image-loader init service).
+#
+# Required env vars (set in Portainer stack env or .env.prod):
+#   DOMAIN, PUBLIC_IP, DB_PASSWORD, COOKIE_SECRET, JWT_SECRET, TURN_SECRET
+#
+# Before first deploy: убедитесь, что jetkvm-cloud-2026.04.20.tar.gz
+# лежит в этой папке на сервере (см. ReadGH.me в корне репозитория).
+# =====================================================================
+
+networks:
+  jetkvm:
+    driver: bridge
+
+services:
+  # ── Init: загружает Docker-образ jetkvm-cloud:latest из tar.gz ────────
+  image-loader:
+    image: docker:24-cli
+    restart: "no"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./jetkvm-cloud-2026.04.20.tar.gz:/image.tar.gz:ro
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        if docker image inspect jetkvm-cloud:latest >/dev/null 2>&1; then
+          echo "[image-loader] jetkvm-cloud:latest already present — skipping load"
+        else
+          echo "[image-loader] Loading jetkvm-cloud:latest from /image.tar.gz ..."
+          docker load -i /image.tar.gz
+          echo "[image-loader] Done."
+        fi
+
+  # ── PostgreSQL ────────────────────────────────────────────────────────
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_USER: jetkvm
+      POSTGRES_DB: jetkvm
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U jetkvm -d jetkvm"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+    networks:
+      - jetkvm
+    volumes:
+      - postgresql:/var/lib/postgresql/data
+
+  # ── Database migrations (одноразовый) ─────────────────────────────────
+  app-migrate:
+    image: jetkvm-cloud:latest
+    pull_policy: never
+    env_file:
+      - .env.prod
+    environment:
+      DATABASE_URL: postgres://jetkvm:${DB_PASSWORD}@db:5432/jetkvm
+    depends_on:
+      image-loader:
+        condition: service_completed_successfully
+      db:
+        condition: service_healthy
+    command: ["sh", "-c", "npx prisma migrate deploy"]
+    networks:
+      - jetkvm
+    restart: "no"
+
+  # ── Cloud API + UI ────────────────────────────────────────────────────
+  app:
+    image: jetkvm-cloud:latest
+    pull_policy: never
+    restart: unless-stopped
+    env_file:
+      - .env.prod
+    environment:
+      PORT: 3000
+      DATABASE_URL: postgres://jetkvm:${DB_PASSWORD}@db:5432/jetkvm
+    depends_on:
+      image-loader:
+        condition: service_completed_successfully
+      db:
+        condition: service_healthy
+      app-migrate:
+        condition: service_completed_successfully
+    networks:
+      - jetkvm
+
+  # ── TURN server (coturn) ──────────────────────────────────────────────
+  turn:
+    image: coturn/coturn:latest
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./coturn/turnserver.prod.conf:/etc/coturn/turnserver.conf:ro
+    command: ["-c", "/etc/coturn/turnserver.conf"]
+
+  # ── Reverse proxy (Caddy + Let's Encrypt) ─────────────────────────────
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - jetkvm
+    depends_on:
+      - app
+
+volumes:
+  postgresql:
+    driver: local
+  caddy_data:
+    driver: local
+  caddy_config:
+    driver: local
