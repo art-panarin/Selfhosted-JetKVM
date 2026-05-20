@@ -119,12 +119,31 @@ services:
       - npm
 
   # ── TURN server (coturn) ──────────────────────────────────────────────
-  # Конфигурация через CLI-аргументы, чтобы не зависеть от файла на диске.
-  # Все параметры подставляются из env-переменных Portainer.
+  # Все параметры через CLI-аргументы. Порты публикуются явно (host-mode
+  # не используется из-за конфликта с user-defined сетями стека).
+  #
+  # ВАЖНО про NAT: контейнер сидит в bridge-сети и видит внутренний
+  # 172.x.x.x. Без явного --external-ip coturn вписал бы этот внутренний
+  # адрес в ICE relay-кандидаты, и relay сломался бы для большинства
+  # клиентов за сложным NAT. Решение — параметр `--external-ip=${TURN_HOST}`
+  # ниже. TURN_HOST задаётся в Portainer Environment variables как
+  # публичный IP сервера (например, 185.244.51.183) — coturn будет
+  # подставлять именно его в ответах STUN/TURN-клиентам.
+  #
+  # UDP relay-диапазон: 49152-49407 (256 портов = 256 одновременных
+  # WebRTC-сессий). Расширить → изменить ports и --max-port синхронно
+  # и открыть соответствующий диапазон в firewall на сервере.
   turn:
     image: coturn/coturn:latest
     restart: unless-stopped
-    network_mode: host
+    ports:
+      - "3478:3478/tcp"
+      - "3478:3478/udp"
+      - "5349:5349/tcp"
+      - "5349:5349/udp"
+      - "49152-49407:49152-49407/udp"
+    networks:
+      - jetkvm
     command:
       - "-n"  # отключить чтение /etc/coturn/turnserver.conf
       - "--listening-port=3478"
@@ -137,7 +156,7 @@ services:
       - "--realm=${DOMAIN}"
       - "--simple-log"
       - "--min-port=49152"
-      - "--max-port=65535"
+      - "--max-port=49407"
       - "--no-multicast-peers"
       - "--no-cli"
 
