@@ -127,7 +127,8 @@ services:
       - "--no-cli"
 
   # ── Reverse proxy (Caddy + Let's Encrypt) ─────────────────────────────
-  # Caddyfile использует {$DOMAIN} — Caddy подставит из env переменной DOMAIN.
+  # Caddyfile встроен в compose через configs: — не зависит от внешнего файла.
+  # Compose сам подставит ${DOMAIN} из env Portainer в текст Caddyfile.
   caddy:
     image: caddy:2-alpine
     restart: unless-stopped
@@ -135,16 +136,24 @@ services:
       - "80:80"
       - "443:443"
       - "443:443/udp"
-    environment:
-      DOMAIN: ${DOMAIN}
+    configs:
+      - source: caddyfile
+        target: /etc/caddy/Caddyfile
+        mode: 0644
     volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
     networks:
       - jetkvm
     depends_on:
       - app
+
+configs:
+  caddyfile:
+    content: |
+      ${DOMAIN} {
+          reverse_proxy app:3000
+      }
 
 volumes:
   postgresql:
