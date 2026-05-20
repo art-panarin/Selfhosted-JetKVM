@@ -1,15 +1,14 @@
 name: jetkvm-cloud
 
 # =====================================================================
-# JetKVM Cloud — Portainer deployment stack
+# JetKVM Cloud — Portainer deployment stack (GHCR)
 #
 # Используется при деплое через Portainer (Stacks → Repository).
-# Никаких файлов на сервере создавать не нужно — все секреты идут через
-# Portainer → Environment variables, Docker-образ качается автоматически
-# контейнером image-loader из GitHub Releases.
+# Docker-образ тянется напрямую из GitHub Container Registry —
+# никаких init-сервисов, никаких файлов на диске сервера.
 #
 # Обязательные env-переменные стека (Portainer → Environment variables,
-# см. ReadGH.me раздел 3.2):
+# см. ReadGH.me раздел 3.3):
 #
 #   --- секреты приложения ---
 #   DOMAIN           — доменное имя сайта (kvm.example.com)
@@ -20,15 +19,15 @@ name: jetkvm-cloud
 #   TURN_SECRET      — openssl rand -hex 32
 #
 #   --- источник Docker-образа ---
-#   GITHUB_REPO      — например: ivanov/jetkvm-selfhosted
-#   RELEASE_TAG      — например: v0.1.001
-#   IMAGE_FILE       — например: jetkvm-cloud-2026.04.20.tar.gz
+#   GHCR_IMAGE       — полный путь к образу, например:
+#                      ghcr.io/ivanov/jetkvm-cloud:v0.1.001
 #
 #   --- опциональные ---
-#   GITHUB_TOKEN     — только для private repo (scope=repo)
-#   EXPECTED_SHA     — sha256 для проверки целостности tar.gz
 #   ALLOWED_IDENTITIES — список email через запятую для ограничения регистрации
 #   R2_*             — параметры S3-совместимого хранилища для прошивок
+#
+# Если репозиторий с образом private — добавьте GHCR как Registry в
+# Portainer (Registries → Add registry → GitHub) до создания стека.
 # =====================================================================
 
 # ── YAML-якорь: общий блок env-переменных для app и app-migrate ───────
@@ -60,64 +59,6 @@ networks:
     driver: bridge
 
 services:
-  # ── Init: качает tar.gz из GitHub Releases и делает docker load ───────
-  image-loader:
-    image: docker:24-cli
-    restart: "no"
-    environment:
-      GITHUB_REPO:   ${GITHUB_REPO}
-      RELEASE_TAG:   ${RELEASE_TAG}
-      IMAGE_FILE:    ${IMAGE_FILE}
-      GITHUB_TOKEN:  ${GITHUB_TOKEN:-}
-      EXPECTED_SHA:  ${EXPECTED_SHA:-}
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - image-cache:/cache
-    entrypoint: ["/bin/sh", "-c"]
-    command:
-      - |
-        set -eu
-
-        LAST_TAG_FILE="/cache/.loaded_tag"
-        TARBALL="/cache/$${IMAGE_FILE}"
-        CURRENT_TAG="$$(cat "$$LAST_TAG_FILE" 2>/dev/null || echo '')"
-
-        # Skip download/load если образ уже загружен и совпадает текущий тег
-        if [ "$$CURRENT_TAG" = "$$RELEASE_TAG" ] && \
-           docker image inspect jetkvm-cloud:latest >/dev/null 2>&1; then
-          echo "[image-loader] jetkvm-cloud:latest уже загружен для тега $${RELEASE_TAG} — пропускаю"
-          exit 0
-        fi
-
-        URL="https://github.com/$${GITHUB_REPO}/releases/download/$${RELEASE_TAG}/$${IMAGE_FILE}"
-
-        if [ -f "$$TARBALL" ] && [ "$$CURRENT_TAG" = "$$RELEASE_TAG" ]; then
-          echo "[image-loader] Использую кэшированный $$TARBALL"
-        else
-          apk add --no-cache curl >/dev/null
-          echo "[image-loader] Скачиваю $$URL"
-          rm -f "$$TARBALL"
-          if [ -n "$${GITHUB_TOKEN}" ]; then
-            curl -fL --retry 3 \
-              -H "Authorization: Bearer $${GITHUB_TOKEN}" \
-              -H "Accept: application/octet-stream" \
-              -o "$$TARBALL" "$$URL"
-          else
-            curl -fL --retry 3 -o "$$TARBALL" "$$URL"
-          fi
-        fi
-
-        if [ -n "$${EXPECTED_SHA}" ]; then
-          echo "[image-loader] Проверка SHA256..."
-          apk add --no-cache coreutils >/dev/null
-          echo "$${EXPECTED_SHA}  $${TARBALL}" | sha256sum -c
-        fi
-
-        echo "[image-loader] docker load -i $$TARBALL"
-        docker load -i "$$TARBALL"
-        echo "$$RELEASE_TAG" > "$$LAST_TAG_FILE"
-        echo "[image-loader] Готово."
-
   # ── PostgreSQL ────────────────────────────────────────────────────────
   db:
     image: postgres:16-alpine
@@ -139,12 +80,9 @@ services:
 
   # ── Database migrations (одноразовый) ─────────────────────────────────
   app-migrate:
-    image: jetkvm-cloud:latest
-    pull_policy: never
+    image: ${GHCR_IMAGE}
     environment: *app-env
     depends_on:
-      image-loader:
-        condition: service_completed_successfully
       db:
         condition: service_healthy
     command: ["sh", "-c", "npx prisma migrate deploy"]
@@ -154,13 +92,10 @@ services:
 
   # ── Cloud API + UI ────────────────────────────────────────────────────
   app:
-    image: jetkvm-cloud:latest
-    pull_policy: never
+    image: ${GHCR_IMAGE}
     restart: unless-stopped
     environment: *app-env
     depends_on:
-      image-loader:
-        condition: service_completed_successfully
       db:
         condition: service_healthy
       app-migrate:
@@ -217,6 +152,4 @@ volumes:
   caddy_data:
     driver: local
   caddy_config:
-    driver: local
-  image-cache:
     driver: local
