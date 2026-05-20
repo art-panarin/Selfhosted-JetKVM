@@ -3,40 +3,120 @@ name: jetkvm-cloud
 # =====================================================================
 # JetKVM Cloud — Portainer deployment stack
 #
-# Use this compose file when deploying via Portainer (Stacks → Repository).
-# It uses the pre-built image jetkvm-cloud:latest delivered via tar.gz
-# (loaded automatically by the image-loader init service).
+# Используется при деплое через Portainer (Stacks → Repository).
+# Никаких файлов на сервере создавать не нужно — все секреты идут через
+# Portainer → Environment variables, Docker-образ качается автоматически
+# контейнером image-loader из GitHub Releases.
 #
-# Required env vars (set in Portainer stack env or .env.prod):
-#   DOMAIN, PUBLIC_IP, DB_PASSWORD, COOKIE_SECRET, JWT_SECRET, TURN_SECRET
+# Обязательные env-переменные стека (Portainer → Environment variables,
+# см. ReadGH.me раздел 3.2):
 #
-# Before first deploy: убедитесь, что jetkvm-cloud-2026.04.20.tar.gz
-# лежит в этой папке на сервере (см. ReadGH.me в корне репозитория).
+#   --- секреты приложения ---
+#   DOMAIN           — доменное имя сайта (kvm.example.com)
+#   TURN_HOST        — публичный IP сервера (для coturn external-ip)
+#   DB_PASSWORD      — openssl rand -hex 16
+#   COOKIE_SECRET    — openssl rand -hex 32
+#   JWT_SECRET       — openssl rand -hex 32
+#   TURN_SECRET      — openssl rand -hex 32
+#
+#   --- источник Docker-образа ---
+#   GITHUB_REPO      — например: ivanov/jetkvm-selfhosted
+#   RELEASE_TAG      — например: v0.1.001
+#   IMAGE_FILE       — например: jetkvm-cloud-2026.04.20.tar.gz
+#
+#   --- опциональные ---
+#   GITHUB_TOKEN     — только для private repo (scope=repo)
+#   EXPECTED_SHA     — sha256 для проверки целостности tar.gz
+#   ALLOWED_IDENTITIES — список email через запятую для ограничения регистрации
+#   R2_*             — параметры S3-совместимого хранилища для прошивок
 # =====================================================================
+
+# ── YAML-якорь: общий блок env-переменных для app и app-migrate ───────
+x-app-env: &app-env
+  NODE_ENV:             production
+  PORT:                 "3000"
+  DOMAIN:               ${DOMAIN}
+  API_HOSTNAME:         https://${DOMAIN}
+  APP_HOSTNAME:         https://${DOMAIN}
+  DATABASE_URL:         postgresql://jetkvm:${DB_PASSWORD}@db:5432/jetkvm?schema=public
+  DB_PASSWORD:          ${DB_PASSWORD}
+  COOKIE_SECRET:        ${COOKIE_SECRET}
+  JWT_SECRET:           ${JWT_SECRET}
+  TURN_SECRET:          ${TURN_SECRET}
+  TURN_HOST:            ${TURN_HOST}
+  TURN_PORT:            "3478"
+  ICE_SERVERS:          stun:stun.l.google.com:19302
+  CORS_ORIGINS:         https://${DOMAIN}
+  REAL_IP_HEADER:       X-Forwarded-For
+  ALLOWED_IDENTITIES:   ${ALLOWED_IDENTITIES:-}
+  R2_ENDPOINT:          ${R2_ENDPOINT:-}
+  R2_ACCESS_KEY_ID:     ${R2_ACCESS_KEY_ID:-}
+  R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY:-}
+  R2_BUCKET:            ${R2_BUCKET:-}
+  R2_CDN_URL:           ${R2_CDN_URL:-}
 
 networks:
   jetkvm:
     driver: bridge
 
 services:
-  # ── Init: загружает Docker-образ jetkvm-cloud:latest из tar.gz ────────
+  # ── Init: качает tar.gz из GitHub Releases и делает docker load ───────
   image-loader:
     image: docker:24-cli
     restart: "no"
+    environment:
+      GITHUB_REPO:   ${GITHUB_REPO}
+      RELEASE_TAG:   ${RELEASE_TAG}
+      IMAGE_FILE:    ${IMAGE_FILE}
+      GITHUB_TOKEN:  ${GITHUB_TOKEN:-}
+      EXPECTED_SHA:  ${EXPECTED_SHA:-}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - ./jetkvm-cloud-2026.04.20.tar.gz:/image.tar.gz:ro
+      - image-cache:/cache
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
-        set -e
-        if docker image inspect jetkvm-cloud:latest >/dev/null 2>&1; then
-          echo "[image-loader] jetkvm-cloud:latest already present — skipping load"
-        else
-          echo "[image-loader] Loading jetkvm-cloud:latest from /image.tar.gz ..."
-          docker load -i /image.tar.gz
-          echo "[image-loader] Done."
+        set -eu
+
+        LAST_TAG_FILE="/cache/.loaded_tag"
+        TARBALL="/cache/$${IMAGE_FILE}"
+        CURRENT_TAG="$$(cat "$$LAST_TAG_FILE" 2>/dev/null || echo '')"
+
+        # Skip download/load если образ уже загружен и совпадает текущий тег
+        if [ "$$CURRENT_TAG" = "$$RELEASE_TAG" ] && \
+           docker image inspect jetkvm-cloud:latest >/dev/null 2>&1; then
+          echo "[image-loader] jetkvm-cloud:latest уже загружен для тега $${RELEASE_TAG} — пропускаю"
+          exit 0
         fi
+
+        URL="https://github.com/$${GITHUB_REPO}/releases/download/$${RELEASE_TAG}/$${IMAGE_FILE}"
+
+        if [ -f "$$TARBALL" ] && [ "$$CURRENT_TAG" = "$$RELEASE_TAG" ]; then
+          echo "[image-loader] Использую кэшированный $$TARBALL"
+        else
+          apk add --no-cache curl >/dev/null
+          echo "[image-loader] Скачиваю $$URL"
+          rm -f "$$TARBALL"
+          if [ -n "$${GITHUB_TOKEN}" ]; then
+            curl -fL --retry 3 \
+              -H "Authorization: Bearer $${GITHUB_TOKEN}" \
+              -H "Accept: application/octet-stream" \
+              -o "$$TARBALL" "$$URL"
+          else
+            curl -fL --retry 3 -o "$$TARBALL" "$$URL"
+          fi
+        fi
+
+        if [ -n "$${EXPECTED_SHA}" ]; then
+          echo "[image-loader] Проверка SHA256..."
+          apk add --no-cache coreutils >/dev/null
+          echo "$${EXPECTED_SHA}  $${TARBALL}" | sha256sum -c
+        fi
+
+        echo "[image-loader] docker load -i $$TARBALL"
+        docker load -i "$$TARBALL"
+        echo "$$RELEASE_TAG" > "$$LAST_TAG_FILE"
+        echo "[image-loader] Готово."
 
   # ── PostgreSQL ────────────────────────────────────────────────────────
   db:
@@ -61,10 +141,7 @@ services:
   app-migrate:
     image: jetkvm-cloud:latest
     pull_policy: never
-    env_file:
-      - .env.prod
-    environment:
-      DATABASE_URL: postgres://jetkvm:${DB_PASSWORD}@db:5432/jetkvm
+    environment: *app-env
     depends_on:
       image-loader:
         condition: service_completed_successfully
@@ -80,11 +157,7 @@ services:
     image: jetkvm-cloud:latest
     pull_policy: never
     restart: unless-stopped
-    env_file:
-      - .env.prod
-    environment:
-      PORT: 3000
-      DATABASE_URL: postgres://jetkvm:${DB_PASSWORD}@db:5432/jetkvm
+    environment: *app-env
     depends_on:
       image-loader:
         condition: service_completed_successfully
@@ -96,15 +169,30 @@ services:
       - jetkvm
 
   # ── TURN server (coturn) ──────────────────────────────────────────────
+  # Конфигурация через CLI-аргументы, чтобы не зависеть от файла на диске.
+  # Все параметры подставляются из env-переменных Portainer.
   turn:
     image: coturn/coturn:latest
     restart: unless-stopped
     network_mode: host
-    volumes:
-      - ./coturn/turnserver.prod.conf:/etc/coturn/turnserver.conf:ro
-    command: ["-c", "/etc/coturn/turnserver.conf"]
+    command:
+      - "-n"  # отключить чтение /etc/coturn/turnserver.conf
+      - "--listening-port=3478"
+      - "--tls-listening-port=5349"
+      - "--external-ip=${TURN_HOST}"
+      - "--fingerprint"
+      - "--lt-cred-mech"
+      - "--use-auth-secret"
+      - "--static-auth-secret=${TURN_SECRET}"
+      - "--realm=${DOMAIN}"
+      - "--simple-log"
+      - "--min-port=49152"
+      - "--max-port=65535"
+      - "--no-multicast-peers"
+      - "--no-cli"
 
   # ── Reverse proxy (Caddy + Let's Encrypt) ─────────────────────────────
+  # Caddyfile использует {$DOMAIN} — Caddy подставит из env переменной DOMAIN.
   caddy:
     image: caddy:2-alpine
     restart: unless-stopped
@@ -112,6 +200,8 @@ services:
       - "80:80"
       - "443:443"
       - "443:443/udp"
+    environment:
+      DOMAIN: ${DOMAIN}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
@@ -127,4 +217,6 @@ volumes:
   caddy_data:
     driver: local
   caddy_config:
+    driver: local
+  image-cache:
     driver: local
