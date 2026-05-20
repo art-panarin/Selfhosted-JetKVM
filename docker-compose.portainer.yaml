@@ -1,11 +1,11 @@
 name: jetkvm-cloud
 
 # =====================================================================
-# JetKVM Cloud — Portainer deployment stack (GHCR + внешний NPM)
+# JetKVM Cloud — Portainer deployment stack (GHCR + NPM в host-mode)
 #
-# Версия для сервера, где уже работает Nginx Proxy Manager (или другой
-# reverse proxy) на портах 80/443. JetKVM не публикует HTTP/HTTPS порты
-# наружу — NPM проксирует трафик к контейнеру app по внутренней сети.
+# Версия для сервера, где Nginx Proxy Manager работает в host-сети
+# (network_mode: host). NPM имеет прямой доступ к 127.0.0.1 хоста, поэтому
+# app публикует порт 3000 только на loopback (не виден из интернета).
 #
 # Обязательные env-переменные стека (Portainer → Environment variables):
 #
@@ -21,17 +21,13 @@ name: jetkvm-cloud
 #   GHCR_IMAGE       — полный путь к образу, например:
 #                      ghcr.io/art-panarin/jetkvm-cloud:v0.1.001
 #
-#   --- внешний прокси (NPM) ---
-#   NPM_NETWORK      — имя Docker-сети NPM, например npm_default.
-#                      Узнать: docker network ls | grep -i npm
-#
 #   --- опциональные ---
 #   ALLOWED_IDENTITIES — список email через запятую для ограничения регистрации
 #   R2_*             — параметры S3-совместимого хранилища для прошивок
 #
 # В NPM создайте Proxy Host:
 #   • Domain: ВАШ-ДОМЕН
-#   • Forward Hostname: jetkvm-cloud-app-1
+#   • Forward Hostname / IP: 127.0.0.1
 #   • Forward Port: 3000
 #   • ☑ Websockets Support, ☑ Block Common Exploits
 #   • SSL: Request Let's Encrypt + Force SSL
@@ -64,11 +60,6 @@ x-app-env: &app-env
 networks:
   jetkvm:
     driver: bridge
-  # Внешняя сеть NPM — чтобы reverse proxy мог достучаться до app по DNS-имени.
-  # Имя сети задаётся в env var NPM_NETWORK (узнайте: docker network ls | grep npm).
-  npm:
-    external: true
-    name: ${NPM_NETWORK}
 
 services:
   # ── PostgreSQL ────────────────────────────────────────────────────────
@@ -103,8 +94,9 @@ services:
     restart: "no"
 
   # ── Cloud API + UI ────────────────────────────────────────────────────
-  # Подключён к двум сетям: jetkvm (для общения с db) и npm (чтобы внешний
-  # Nginx Proxy Manager мог достучаться по DNS-имени jetkvm-cloud-app-1).
+  # Порт 3000 биндится только на loopback хоста (127.0.0.1) — снаружи
+  # не виден, но доступен NPM (он работает в host-network). В NPM Proxy
+  # Host укажите Forward Hostname=127.0.0.1, Forward Port=3000.
   app:
     image: ${GHCR_IMAGE}
     restart: unless-stopped
@@ -114,9 +106,10 @@ services:
         condition: service_healthy
       app-migrate:
         condition: service_completed_successfully
+    ports:
+      - "127.0.0.1:3000:3000"
     networks:
       - jetkvm
-      - npm
 
   # ── TURN server (coturn) ──────────────────────────────────────────────
   # Все параметры через CLI-аргументы. Порты публикуются явно (host-mode
