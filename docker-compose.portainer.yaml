@@ -1,14 +1,13 @@
 name: jetkvm-cloud
 
 # =====================================================================
-# JetKVM Cloud — Portainer deployment stack (GHCR)
+# JetKVM Cloud — Portainer deployment stack (GHCR + внешний NPM)
 #
-# Используется при деплое через Portainer (Stacks → Repository).
-# Docker-образ тянется напрямую из GitHub Container Registry —
-# никаких init-сервисов, никаких файлов на диске сервера.
+# Версия для сервера, где уже работает Nginx Proxy Manager (или другой
+# reverse proxy) на портах 80/443. JetKVM не публикует HTTP/HTTPS порты
+# наружу — NPM проксирует трафик к контейнеру app по внутренней сети.
 #
-# Обязательные env-переменные стека (Portainer → Environment variables,
-# см. ReadGH.me раздел 3.3):
+# Обязательные env-переменные стека (Portainer → Environment variables):
 #
 #   --- секреты приложения ---
 #   DOMAIN           — доменное имя сайта (kvm.example.com)
@@ -20,14 +19,22 @@ name: jetkvm-cloud
 #
 #   --- источник Docker-образа ---
 #   GHCR_IMAGE       — полный путь к образу, например:
-#                      ghcr.io/ivanov/jetkvm-cloud:v0.1.001
+#                      ghcr.io/art-panarin/jetkvm-cloud:v0.1.001
+#
+#   --- внешний прокси (NPM) ---
+#   NPM_NETWORK      — имя Docker-сети NPM, например npm_default.
+#                      Узнать: docker network ls | grep -i npm
 #
 #   --- опциональные ---
 #   ALLOWED_IDENTITIES — список email через запятую для ограничения регистрации
 #   R2_*             — параметры S3-совместимого хранилища для прошивок
 #
-# Если репозиторий с образом private — добавьте GHCR как Registry в
-# Portainer (Registries → Add registry → GitHub) до создания стека.
+# В NPM создайте Proxy Host:
+#   • Domain: ВАШ-ДОМЕН
+#   • Forward Hostname: jetkvm-cloud-app-1
+#   • Forward Port: 3000
+#   • ☑ Websockets Support, ☑ Block Common Exploits
+#   • SSL: Request Let's Encrypt + Force SSL
 # =====================================================================
 
 # ── YAML-якорь: общий блок env-переменных для app и app-migrate ───────
@@ -57,6 +64,11 @@ x-app-env: &app-env
 networks:
   jetkvm:
     driver: bridge
+  # Внешняя сеть NPM — чтобы reverse proxy мог достучаться до app по DNS-имени.
+  # Имя сети задаётся в env var NPM_NETWORK (узнайте: docker network ls | grep npm).
+  npm:
+    external: true
+    name: ${NPM_NETWORK}
 
 services:
   # ── PostgreSQL ────────────────────────────────────────────────────────
@@ -91,6 +103,8 @@ services:
     restart: "no"
 
   # ── Cloud API + UI ────────────────────────────────────────────────────
+  # Подключён к двум сетям: jetkvm (для общения с db) и npm (чтобы внешний
+  # Nginx Proxy Manager мог достучаться по DNS-имени jetkvm-cloud-app-1).
   app:
     image: ${GHCR_IMAGE}
     restart: unless-stopped
@@ -102,6 +116,7 @@ services:
         condition: service_completed_successfully
     networks:
       - jetkvm
+      - npm
 
   # ── TURN server (coturn) ──────────────────────────────────────────────
   # Конфигурация через CLI-аргументы, чтобы не зависеть от файла на диске.
@@ -126,39 +141,10 @@ services:
       - "--no-multicast-peers"
       - "--no-cli"
 
-  # ── Reverse proxy (Caddy + Let's Encrypt) ─────────────────────────────
-  # Caddyfile встроен в compose через configs: — не зависит от внешнего файла.
-  # Compose сам подставит ${DOMAIN} из env Portainer в текст Caddyfile.
-  caddy:
-    image: caddy:2-alpine
-    restart: unless-stopped
-    ports:
-      - "80:80"
-      - "443:443"
-      - "443:443/udp"
-    configs:
-      - source: caddyfile
-        target: /etc/caddy/Caddyfile
-        mode: 0644
-    volumes:
-      - caddy_data:/data
-      - caddy_config:/config
-    networks:
-      - jetkvm
-    depends_on:
-      - app
-
-configs:
-  caddyfile:
-    content: |
-      ${DOMAIN} {
-          reverse_proxy app:3000
-      }
+  # ── (Caddy убран) ─────────────────────────────────────────────────────
+  # HTTPS-терминацию и SSL обрабатывает внешний Nginx Proxy Manager,
+  # уже работающий на этом сервере. См. шапку файла.
 
 volumes:
   postgresql:
-    driver: local
-  caddy_data:
-    driver: local
-  caddy_config:
     driver: local
