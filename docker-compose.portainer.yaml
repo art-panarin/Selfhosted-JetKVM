@@ -28,7 +28,7 @@ name: jetkvm-cloud
 # В NPM создайте Proxy Host:
 #   • Domain: ВАШ-ДОМЕН
 #   • Forward Hostname / IP: 127.0.0.1
-#   • Forward Port: 3000
+#   • Forward Port: 3008
 #   • ☑ Websockets Support, ☑ Block Common Exploits
 #   • SSL: Request Let's Encrypt + Force SSL
 # =====================================================================
@@ -94,9 +94,10 @@ services:
     restart: "no"
 
   # ── Cloud API + UI ────────────────────────────────────────────────────
-  # Порт 3000 биндится только на loopback хоста (127.0.0.1) — снаружи
-  # не виден, но доступен NPM (он работает в host-network). В NPM Proxy
-  # Host укажите Forward Hostname=127.0.0.1, Forward Port=3000.
+  # Внутри контейнера app слушает на 3000, на хосте публикуется как 3008
+  # (3000 уже занят другим сервисом). Бинд только на 127.0.0.1 — снаружи
+  # не виден, доступен NPM (он работает в host-network).
+  # В NPM Proxy Host: Forward Hostname=127.0.0.1, Forward Port=3008.
   app:
     image: ${GHCR_IMAGE}
     restart: unless-stopped
@@ -107,7 +108,7 @@ services:
       app-migrate:
         condition: service_completed_successfully
     ports:
-      - "127.0.0.1:3000:3000"
+      - "127.0.0.1:3008:3000"
     networks:
       - jetkvm
 
