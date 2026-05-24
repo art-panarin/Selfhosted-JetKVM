@@ -34,12 +34,16 @@ name: jetkvm-cloud
 # =====================================================================
 
 # ── YAML-якорь: общий блок env-переменных для app и app-migrate ───────
+# API_HOSTNAME / APP_HOSTNAME / CORS_ORIGINS можно переопределить через env
+# Portainer — это нужно если сайт открывается на нестандартном порту,
+# например https://booking.lorett.org:3016 (тогда они должны содержать
+# порт). Если не заданы — используется чистый https://${DOMAIN}.
 x-app-env: &app-env
   NODE_ENV:             production
   PORT:                 "3000"
   DOMAIN:               ${DOMAIN}
-  API_HOSTNAME:         https://${DOMAIN}
-  APP_HOSTNAME:         https://${DOMAIN}
+  API_HOSTNAME:         ${API_HOSTNAME:-https://${DOMAIN}}
+  APP_HOSTNAME:         ${APP_HOSTNAME:-https://${DOMAIN}}
   DATABASE_URL:         postgresql://jetkvm:${DB_PASSWORD}@db:5432/jetkvm?schema=public
   DB_PASSWORD:          ${DB_PASSWORD}
   COOKIE_SECRET:        ${COOKIE_SECRET}
@@ -48,7 +52,7 @@ x-app-env: &app-env
   TURN_HOST:            ${TURN_HOST}
   TURN_PORT:            "3478"
   ICE_SERVERS:          stun:stun.l.google.com:19302
-  CORS_ORIGINS:         https://${DOMAIN}
+  CORS_ORIGINS:         ${CORS_ORIGINS:-https://${DOMAIN}}
   REAL_IP_HEADER:       X-Forwarded-For
   ALLOWED_IDENTITIES:   ${ALLOWED_IDENTITIES:-}
   R2_ENDPOINT:          ${R2_ENDPOINT:-}
@@ -94,10 +98,10 @@ services:
     restart: "no"
 
   # ── Cloud API + UI ────────────────────────────────────────────────────
-  # Внутри контейнера app слушает на 3000, на хосте публикуется как 3008
-  # (3000 уже занят другим сервисом). Бинд только на 127.0.0.1 — снаружи
-  # не виден, доступен NPM (он работает в host-network).
-  # В NPM Proxy Host: Forward Hostname=127.0.0.1, Forward Port=3008.
+  # Внутри контейнера app слушает на 3000, на хосте публикуется как 3016
+  # (3000 и 3008 заняты другими сервисами). Бинд только на 127.0.0.1 —
+  # снаружи не виден, доступен NPM (он работает в host-network).
+  # В NPM Proxy Host: Forward Hostname=127.0.0.1, Forward Port=3016.
   app:
     image: ${GHCR_IMAGE}
     restart: unless-stopped
@@ -108,7 +112,7 @@ services:
       app-migrate:
         condition: service_completed_successfully
     ports:
-      - "127.0.0.1:3008:3000"
+      - "127.0.0.1:3016:3000"
     networks:
       - jetkvm
 
